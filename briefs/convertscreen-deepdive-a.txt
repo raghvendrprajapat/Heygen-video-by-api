@@ -1,0 +1,17 @@
+So that is the fast path. Let me slow down now and walk the whole thing properly, because there is a lot in here that you will not notice on a first pass.
+
+Start with the editor itself. On the left you have the AI assistant. You describe your app in one line. A habit tracker that turns daily goals into streaks. That is all it needs. It generates the copy for all five slides at once.
+
+Underneath that is the layout picker. Classic gives you the standard centred frame. Bleed pushes the screenshot to the edge so it feels bigger than the slide. Tilt right and tilt left angle the device for a bit of motion. Float lifts it off the background with a shadow.
+
+You are not locked into one for the whole set. Mix them. A bleed layout on the hook slide and a classic on the feature slides reads really well.
+
+Now look at the slide role selector at the top. Hook. Feature. Proof. CTA. This is the part that separates this from a wallpaper generator.
+
+Each role changes what the AI writes. A hook slide gets a broad benefit line. A feature slide gets something specific and concrete. A proof slide leans on social signals, numbers, community. The CTA slide closes.
+
+If you drag the slides into a different order, the roles travel with them and the copy adapts. You are editing a story, not five separate images.
+
+Next, the screenshots panel. You can replace or upload more at any point. One thing worth knowing: uploads keep their full resolution now. A screenshot added earlier gets sharper if you upload it again. If your early slides look soft, that is why.
+
+Then the status bar control. Clean replaces the real status bar with a tidy one. Original keeps whatever was on your device, battery percentage and all. Hidden removes it completely. Clean is almost always the right answer, because a ninety percent battery and three notifications is the kind of detail that quietly makes a listing look unfinished.

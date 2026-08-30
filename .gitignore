@@ -16,3 +16,5 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.mp3
+*.srt

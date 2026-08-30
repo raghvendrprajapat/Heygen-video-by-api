@@ -450,7 +450,7 @@ def cmd_video_agent(args):
 
     video_id = poll_session_for_video(session_id, args.poll_interval, args.timeout)
     print(f"  video id: {video_id}")
-    video_url = poll_until_done(video_id, args.poll_interval, args.timeout)
+    video_url, _ = poll_until_done(video_id, args.poll_interval, args.timeout)
 
     print(f"Ready. Downloading to {args.out}")
     size = download(video_url, args.out)
@@ -482,6 +482,53 @@ def poll_session_for_video(session_id, interval, timeout):
         time.sleep(interval)
 
     raise HeyGenError(f"Timed out after {timeout}s waiting for a video_id on {session_id}.")
+
+
+def cmd_speech(args):
+    """Text-to-speech via Starfish.
+
+    Far cheaper than avatar video per second, so this is what narrates the
+    long screen-only stretches of a walkthrough while the avatar carries the
+    pieces where a face on camera actually earns its cost.
+    """
+    text = args.text
+    if args.text_file:
+        with open(args.text_file, "r", encoding="utf-8") as handle:
+            text = handle.read().strip()
+    if not text:
+        raise HeyGenError("Text is empty.")
+    if len(text) > 5000:
+        raise HeyGenError(
+            f"Text is {len(text)} characters; the limit is 5000. Split it and "
+            "concatenate the audio."
+        )
+
+    body = {"text": text, "voice_id": args.voice_id}
+    if args.speed != 1.0:
+        body["speed"] = args.speed
+
+    if not args.confirm:
+        print("DRY RUN -- nothing was sent, no credits spent.\n")
+        preview = dict(body)
+        preview["text"] = text[:200] + ("..." if len(text) > 200 else "")
+        print(json.dumps(preview, indent=2, ensure_ascii=False))
+        est = len(text.split()) / 150 * 60 * 0.000667
+        print(f"\nRough estimate: ~${est:.3f} at $0.000667/sec.")
+        print(f"To send, re-run with {CONFIRM_FLAG}")
+        return 0
+
+    data = request("POST", "/v3/voices/speech", body=body, timeout=300).get("data") or {}
+    audio_url = data.get("audio_url")
+    if not audio_url:
+        raise HeyGenError(f"No audio_url in response: {json.dumps(data)}")
+    print(f"duration: {data.get('duration')}s")
+
+    if args.out:
+        size = download(audio_url, args.out)
+        print(f"Saved {args.out} ({size // 1024} KiB)")
+    else:
+        print(audio_url)
+    return 0
 
 
 def cmd_agent_reply(args):
@@ -587,6 +634,13 @@ def build_payload(args, script_text):
     if voice_settings:
         payload["voice_settings"] = voice_settings
 
+    # caption must be an object here; the boolean forms the v2 API accepted are
+    # rejected by /v3/videos with invalid_parameter.
+    if args.caption_srt:
+        payload["caption"] = {"file_format": "srt"}
+        if args.burn_captions:
+            payload["caption"]["style"] = "default"
+
     # expressiveness is Avatar IV only; sending it with avatar_v is a hard error.
     if args.expressiveness:
         if args.engine == "avatar_v":
@@ -661,7 +715,7 @@ def poll_until_done(video_id, interval, timeout):
             url = data.get("video_url")
             if not url:
                 raise HeyGenError(f"Status is '{status}' but no video_url was returned.")
-            return url
+            return url, data
         if status in FAIL_STATES:
             raise HeyGenError(
                 f"Generation failed: {data.get('failure_message') or data}"
@@ -694,11 +748,17 @@ def cmd_generate(args):
 
     print(f"  video id: {video_id}")
     print(f"Polling every {args.poll_interval}s (timeout {args.timeout}s)...")
-    video_url = poll_until_done(video_id, args.poll_interval, args.timeout)
+    video_url, record = poll_until_done(video_id, args.poll_interval, args.timeout)
 
     print(f"Ready. Downloading to {args.out}")
     size = download(video_url, args.out)
     print(f"\nSaved {args.out} ({size // 1024} KiB)")
+
+    subtitle_url = record.get("subtitle_url")
+    if subtitle_url:
+        srt_path = os.path.splitext(args.out)[0] + ".srt"
+        download(subtitle_url, srt_path)
+        print(f"Saved {srt_path}")
     return 0
 
 
@@ -781,6 +841,21 @@ examples:
     ))
     agent_status.add_argument("--session-id", required=True)
     agent_status.set_defaults(func=cmd_agent_status)
+
+    speech = add_json(subparsers.add_parser(
+        "speech", help="text-to-speech via Starfish ($0.000667/sec)"
+    ))
+    speech_text = speech.add_mutually_exclusive_group(required=True)
+    speech_text.add_argument("--text", help="text to speak, max 5000 chars")
+    speech_text.add_argument("--text-file", help="read the text from a file")
+    speech.add_argument("--voice-id", required=True)
+    speech.add_argument("--speed", type=float, default=1.0)
+    speech.add_argument("--out", help="save the mp3 here; otherwise print the URL")
+    speech.add_argument(
+        CONFIRM_FLAG, dest="confirm", action="store_true",
+        help="required to actually submit; without it this is a dry run",
+    )
+    speech.set_defaults(func=cmd_speech)
 
     reply = add_json(subparsers.add_parser(
         "agent-reply",
@@ -869,6 +944,14 @@ examples:
     generate.add_argument("--background-color", default=None, help='hex, e.g. "#ffffff"')
     generate.add_argument("--remove-background", action="store_true")
     generate.add_argument("--output-format", default="mp4", choices=["mp4", "webm"])
+    generate.add_argument(
+        "--caption-srt", action="store_true",
+        help="also produce an SRT sidecar; video_url stays a clean render",
+    )
+    generate.add_argument(
+        "--burn-captions", action="store_true",
+        help="with --caption-srt, also burn captions into the render",
+    )
     generate.add_argument("--out", default="out/video.mp4", help="where to save it")
     generate.add_argument("--poll-interval", type=int, default=10)
     generate.add_argument("--timeout", type=int, default=1800)

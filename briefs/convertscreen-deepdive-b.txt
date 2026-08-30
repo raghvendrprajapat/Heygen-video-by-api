@@ -1,0 +1,19 @@
+Now the detail work. This is where a set stops looking generated.
+
+Highlight cards. You drag a card over any region of the screenshot and it lifts that part out, so the eye goes exactly where you want it. Use it on the one control that makes your app worth downloading. One per slide, at most.
+
+Callouts. Floating labels, pills and badges that sit around the phone. A subscriber count. A rating. A small tag that names the feature. You can pin them top, centre or bottom, snap them to a corner, and set the size. These are the details that make a screenshot look designed instead of exported.
+
+Device frames. iPhone, Android, tablet, Chromebook, or none at all. Frameless is worth trying. Without a bezel the screenshot fills more of the slide, and on a crowded store page more pixels of your actual app is usually the stronger play.
+
+Typography. Title size, subtitle, and an accent colour that carries across the set. Keep the title under about six words. On a phone-sized store thumbnail, anything longer stops being read and starts being skipped.
+
+Backgrounds. There is a solid colour picker, an image option, and your own upload. But the one to look at is panoramic. It spans a single continuous background across every slide, so as the user swipes, the artwork keeps moving. The set reads as one panorama instead of five unrelated cards. It is a small thing that makes a listing look expensive.
+
+Then languages. Add a language and it translates the whole set, copy and layout together. If you are shipping in more than one market this is normally where the cost lives, because it usually means a designer and a translator and another round of exports.
+
+And finally the export. It asks where you are publishing. iOS only, Android only, or both. Pick Android and it works out the whole matrix for you: phone at ten eighty by nineteen twenty, seven inch tablet, ten inch tablet, and Chromebook.
+
+Before anything is written it shows you the review grid. Five slides, four device sizes, one language. Twenty images, laid out so you can check every single one. Tap any of them to see it full size, and if something is wrong you go straight back into the editor from there.
+
+Then you confirm, and it exports the lot as one archive, named and sized correctly, ready to drop straight into App Store Connect or the Play Console.
