@@ -484,6 +484,56 @@ def poll_session_for_video(session_id, interval, timeout):
     raise HeyGenError(f"Timed out after {timeout}s waiting for a video_id on {session_id}.")
 
 
+def cmd_agent_reply(args):
+    """Send a follow-up/revision into a chat-mode session.
+
+    Approving a storyboard is just an ordinary message -- there is no separate
+    approve flag -- so this doubles as the approve step. It therefore carries
+    the same credit guard as the other spending paths.
+    """
+    message = args.message
+    if args.message_file:
+        with open(args.message_file, "r", encoding="utf-8") as handle:
+            message = handle.read().strip()
+    if not message:
+        raise HeyGenError("Message is empty.")
+
+    body = {"message": message}
+    if args.avatar_id:
+        body["avatar_id"] = args.avatar_id
+    if args.voice_id:
+        body["voice_id"] = args.voice_id
+
+    files = [{"type": "asset_id", "asset_id": a} for a in (args.asset_id or [])]
+    files += [{"type": "url", "url": u} for u in (args.file_url or [])]
+    pending_uploads = list(args.upload or [])
+
+    if not args.confirm:
+        preview = dict(body)
+        preview["files"] = files + [
+            {"type": "asset_id", "asset_id": f"<upload of {p}>"} for p in pending_uploads
+        ]
+        print("DRY RUN -- nothing was sent, no credits spent.\n")
+        print(f"Would POST to {BASE_URL}{EP_AGENTS}/{args.session_id}:\n")
+        print(json.dumps(preview, indent=2, ensure_ascii=False))
+        print(
+            "\nNote: a message that approves a storyboard starts the render.\n"
+            f"To send it, re-run with {CONFIRM_FLAG}"
+        )
+        return 0
+
+    for path in pending_uploads:
+        print(f"Uploading {path} ...")
+        files.append({"type": "asset_id", "asset_id": upload_asset(path)})
+    if files:
+        body["files"] = files
+
+    request("POST", f"{EP_AGENTS}/{args.session_id}", body=body, timeout=180)
+    print("Message sent.")
+    print(f"Track with: python3 heygen.py agent-status --session-id {args.session_id}")
+    return 0
+
+
 def cmd_agent_status(args):
     payload = request("GET", f"{EP_AGENTS}/{args.session_id}")
     if args.json:
@@ -731,6 +781,26 @@ examples:
     ))
     agent_status.add_argument("--session-id", required=True)
     agent_status.set_defaults(func=cmd_agent_status)
+
+    reply = add_json(subparsers.add_parser(
+        "agent-reply",
+        help="send feedback or approve a storyboard (approving SPENDS CREDITS)",
+    ))
+    reply.add_argument("--session-id", required=True)
+    reply_msg = reply.add_mutually_exclusive_group(required=True)
+    reply_msg.add_argument("--message", help="feedback, or an approval to render")
+    reply_msg.add_argument("--message-file", help="read the message from a file")
+    reply.add_argument("--upload", action="append", metavar="PATH",
+                       help="local file to attach. Repeatable.")
+    reply.add_argument("--asset-id", action="append", help="attach an existing asset")
+    reply.add_argument("--file-url", action="append", help="attach a file by URL")
+    reply.add_argument("--avatar-id", help="override the avatar")
+    reply.add_argument("--voice-id", help="override the voice")
+    reply.add_argument(
+        CONFIRM_FLAG, dest="confirm", action="store_true",
+        help="required to actually send; without it this is a dry run",
+    )
+    reply.set_defaults(func=cmd_agent_reply)
 
     agent = add_json(subparsers.add_parser(
         "video-agent",
