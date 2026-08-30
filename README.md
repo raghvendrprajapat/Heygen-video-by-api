@@ -1,20 +1,24 @@
 # HeyGen video by API
 
-A single-file Python client for the [HeyGen](https://www.heygen.com) API:
-list avatars and voices, check your credit balance, submit a video generation
-job, poll it to completion, and download the MP4.
+A single-file Python client for the [HeyGen](https://www.heygen.com) **v3** API:
+browse avatar looks and voices, check your wallet balance, submit a video
+generation job, poll it to completion, and download the MP4.
 
 Stdlib only — no `pip install`, no virtualenv. Requires Python 3.8+.
+
+> **v2 is being removed.** The legacy `/v2/avatars`, `/v2/video/generate` and
+> `/v1/video_status.get` endpoints sunset on **2026-10-31**. This client targets
+> v3 throughout.
 
 ## Credits
 
 HeyGen's API is pay-as-you-go; the free API tier ended in February 2026.
 
-**Only `generate` spends credits.** `avatars`, `voices`, `quota` and `status`
-are all free to call. As a safety net, `generate` will not submit anything
-unless you pass `--i-understand-this-spends-credits` — without it, it prints
-the exact JSON payload it would send and exits. Use that to check your
-parameters before spending anything.
+**Only `generate` spends credits.** `avatars`, `voices`, `credits` and `status`
+are all free. As a safety net, `generate` will not submit anything unless you
+pass `--i-understand-this-spends-credits` — without it, it prints the exact
+JSON payload it would send and exits. Use that to check your parameters before
+spending anything.
 
 ## Authentication
 
@@ -25,13 +29,13 @@ history and the process list.
 **Mode 1 — local machine.** Export the key:
 
 ```bash
-export HEYGEN_API_KEY='sk_...'      # note the leading space to skip bash history
-python3 heygen.py quota
+ export HEYGEN_API_KEY='sk_...'     # leading space keeps it out of bash history
+python3 heygen.py credits
 ```
 
 The script sends `X-Api-Key: <your key>`.
 
-**Mode 2 — Claude Code cloud session.** Leave `HEYGEN_API_KEY` unset. Store
+**Mode 2 — Claude Code cloud session.** Leave `HEYGEN_API_KEY` unset and store
 the key on the cloud environment as an **API credential** instead
 (claude.ai/code → environment editor → API credentials):
 
@@ -40,12 +44,13 @@ the key on the cloud environment as an **API credential** instead
 - Custom headers: name `X-Api-Key`, **prefix cleared** (HeyGen wants the bare
   value, not `Bearer <key>`), value = your key
 
-The agent proxy then attaches the header *after* the request leaves the VM.
-The script sends no auth header of its own and the key never reaches the
-session, its environment variables, or any file. This is the safer mode —
-prefer it.
+The agent proxy attaches the header *after* the request leaves the VM, so the
+key never reaches the session, its environment variables, or any file. Prefer
+this mode.
 
-Never commit the key. `.gitignore` already covers `.env*`, `*.key` and `*.pem`.
+Verify either mode with `python3 heygen.py credits`.
+
+Never commit the key. `.gitignore` covers `.env*`, `*.key` and `*.pem`.
 
 ## Network access
 
@@ -58,29 +63,32 @@ api.heygen.com
 *.heygen.ai
 ```
 
-`*.heygen.ai` is not optional: finished MP4s are served from a pre-signed CDN
-link on `resource*.heygen.ai` / `files2.heygen.ai`, a different host from the
+`*.heygen.ai` is not optional: finished videos are served from a pre-signed CDN
+link on `resource*.heygen.ai` / `files*.heygen.ai`, a different host from the
 API. Without it the download fails even though generation succeeded.
 
 Keep **"Also include default list of common package managers"** checked so
 GitHub and pip keep working.
 
-Environment settings are baked in when the session's VM is provisioned, so
-**changes only take effect in a new session** — they will not appear in one
-that is already running.
-
 ## Usage
 
 ```bash
-python3 heygen.py quota                       # remaining API credits
-python3 heygen.py avatars                     # avatar_id / name / gender
-python3 heygen.py avatars --limit 0           # show all
-python3 heygen.py voices --language hindi     # filter by language
-python3 heygen.py voices --language english
+python3 heygen.py credits                        # wallet balance
+python3 heygen.py avatars --limit 20             # avatar LOOK ids
+python3 heygen.py avatars --avatar-type digital_twin
+python3 heygen.py voices --language Hindi --limit 0
+python3 heygen.py voices --language English --gender female
 python3 heygen.py status --video-id VIDEO_ID_PLACEHOLDER
 ```
 
-Add `--json` to any command for the raw API response, for piping into `jq`.
+Add `--json` (before or after the subcommand) for raw JSON to pipe into `jq`.
+
+### Avatars: groups vs looks
+
+A **group** is a character (e.g. "Saoirse"); a **look** is one outfit/pose for
+that character. `avatars` lists *looks*, because **the look id is what
+`--avatar-id` takes**. Each character has 18–32 looks, so results cluster by
+character — use `--limit` generously, or `--group-id` to focus on one.
 
 ### Generating a video
 
@@ -89,69 +97,89 @@ Dry run first — prints the payload, sends nothing:
 ```bash
 python3 heygen.py generate \
     --script "PLACEHOLDER SCRIPT TEXT" \
-    --avatar-id AVATAR_ID_PLACEHOLDER \
+    --avatar-id AVATAR_LOOK_ID_PLACEHOLDER \
     --voice-id VOICE_ID_PLACEHOLDER
 ```
 
-For real, once you've picked ids from `avatars` and `voices`:
+For real, once you've picked ids:
 
 ```bash
 python3 heygen.py generate \
     --script-file script.txt \
-    --avatar-id AVATAR_ID_PLACEHOLDER \
+    --avatar-id AVATAR_LOOK_ID_PLACEHOLDER \
     --voice-id VOICE_ID_PLACEHOLDER \
-    --width 1280 --height 720 \
+    --resolution 1080p --aspect-ratio auto \
     --title "PLACEHOLDER TITLE" \
     --out out/video.mp4 \
     --i-understand-this-spends-credits
 ```
 
-This submits the job, polls `video_status.get` every 10s until it completes,
-then streams the MP4 to `--out`. Long scripts can take several minutes.
-
-If it times out, the job is usually still running — the video id is printed,
-so pick it back up with `heygen.py status --video-id ...`.
+This submits the job, polls `GET /v3/videos/{id}` every 10s until it completes,
+then streams the MP4 to `--out`. If it times out the job is usually still
+running — the video id is printed, so pick it back up with
+`heygen.py status --video-id ...`.
 
 ### `generate` options
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--script` / `--script-file` | required | one or the other; file is read as UTF-8 |
-| `--avatar-id` | required | from `heygen.py avatars` |
+| `--script` / `--script-file` | required | one or the other; file read as UTF-8 |
+| `--avatar-id` | required | a **look** id from `heygen.py avatars` |
 | `--voice-id` | required | from `heygen.py voices` |
-| `--width` / `--height` | 1280×720 | 720p; raise for 1080p if your plan allows |
-| `--title` | none | shown in the HeyGen dashboard |
-| `--avatar-style` | `normal` | e.g. `normal`, `circle`, `closeUp` |
-| `--speed` | `1.0` | voice speed, roughly 0.5–1.5 |
+| `--resolution` | `1080p` | `720p`, `1080p`, or `4k` |
+| `--aspect-ratio` | `auto` | `auto`, `16:9`, `9:16`, `4:5`, `5:4`, `1:1` |
+| `--engine` | Avatar IV | `avatar_iii`, `avatar_iv`, `avatar_v` — check the look's `supported_api_engines` first |
+| `--title` | none | display name in the HeyGen dashboard |
+| `--speed` | `1.0` | 0.5–1.5 |
+| `--pitch` | none | −50 to +50 |
+| `--locale` | none | e.g. `en-US`, `hi-IN` |
+| `--motion-prompt` | none | natural-language body/hand motion |
+| `--expressiveness` | none | `low`/`medium`/`high`; **Avatar IV only** |
 | `--background-color` | none | hex, e.g. `#ffffff` |
+| `--remove-background` | off | transparent background |
+| `--output-format` | `mp4` | `mp4` or `webm` (alpha channel) |
 | `--out` | `out/video.mp4` | parent directories are created |
 | `--poll-interval` | `10` | seconds between status checks |
 | `--timeout` | `1800` | seconds before giving up on polling |
+
+`--expressiveness` with `--engine avatar_v` is rejected locally, before the
+request is sent, because HeyGen returns a validation error for that pair.
 
 ## Endpoints used
 
 | Command | Method | Path | Credits |
 | --- | --- | --- | --- |
-| `avatars` | GET | `/v2/avatars` | free |
-| `voices` | GET | `/v2/voices` | free |
-| `quota` | GET | `/v2/user/remaining_quota` | free |
-| `status` | GET | `/v1/video_status.get` | free |
-| `generate` | POST | `/v2/video/generate` | **spends** |
+| `avatars` | GET | `/v3/avatars/looks` | free |
+| `voices` | GET | `/v3/voices` | free |
+| `credits` | GET | `/v3/users/me` | free |
+| `status` | GET | `/v3/videos/{video_id}` | free |
+| `generate` | POST | `/v3/videos` | **spends** |
 
-Override the base URL with `HEYGEN_BASE_URL` if needed.
+Override the base URL with `HEYGEN_BASE_URL`.
 
-> **Heads up:** HeyGen has been migrating these v2 "Studio" endpoints toward a
-> newer API and lists them as slated for deprecation. Re-check the current
-> reference at <https://docs.heygen.com/> before relying on the request shape
-> long-term.
+## Known API quirk: filters are dropped when paginating
+
+As of 2026-08, v3 list endpoints apply query filters to the **first page only**.
+Follow a `next_token` and the filter is silently dropped, so a naive
+paginate-with-filter loop returns mostly wrong rows — `?language=Hindi` walked
+to completion yields 2096 rows of which only 54 are actually Hindi.
+
+`paginate()` therefore re-applies the filter client-side on every page. Don't
+remove that without re-testing:
+
+```bash
+python3 heygen.py voices --language Hindi --limit 0 --json \
+  | python3 -c "import json,sys,collections;print(collections.Counter(v['language'] for v in json.load(sys.stdin)))"
+# expect: Counter({'Hindi': 54})
+```
 
 ## Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
 | `Could not reach ... 403 Forbidden` on the tunnel | Host blocked by the egress policy. See [Network access](#network-access). |
-| `HTTP 401` | Key missing or invalid. Check `HEYGEN_API_KEY`, or that the environment credential is saved and you started a fresh session. |
-| `HTTP 404` on `status` | Unknown `video_id`, or it belongs to another account. |
-| `HTTP 424` | HeyGen rejected the parameters — check `avatar_id`, `voice_id`, and dimensions. |
-| Generation succeeds, download 403s | `*.heygen.ai` is missing from the allowlist. |
-| `remaining_quota` is 0 or negative | Top up the API balance. It is a separate pool from web-plan credits. |
+| `HTTP 401` | Key missing or invalid. Check `HEYGEN_API_KEY`, or that the environment credential is saved. |
+| `HTTP 404` on `status` | Unknown video id, or it belongs to another account. |
+| `HTTP 422` | Bad parameters — most often `avatar_id` set to a *group* id instead of a *look* id. |
+| Generation succeeds, download 403s | `*.heygen.ai` missing from the allowlist. |
+| Balance is 0 | Top up at [app.heygen.com](https://app.heygen.com/home?nav=API). |

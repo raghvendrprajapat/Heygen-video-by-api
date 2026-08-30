@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""HeyGen API client: list avatars/voices, check quota, generate and download videos.
+"""HeyGen v3 API client: browse avatar looks and voices, check the wallet,
+generate a video, poll it, and download the MP4.
 
 Stdlib only -- no pip install required.
+
+Targets the v3 API. The older v2 endpoints (/v2/avatars, /v2/video/generate,
+/v1/video_status.get) are legacy and HeyGen removes them on 2026-10-31.
 
 Auth is dual-mode; see resolve_auth_header() for the details.
 """
@@ -18,19 +22,20 @@ import urllib.request
 
 BASE_URL = os.environ.get("HEYGEN_BASE_URL", "https://api.heygen.com")
 
-# Endpoints. Every one of these except GENERATE is free to call.
-EP_AVATARS = "/v2/avatars"
-EP_VOICES = "/v2/voices"
-EP_QUOTA = "/v2/user/remaining_quota"
-EP_STATUS = "/v1/video_status.get"
-EP_GENERATE = "/v2/video/generate"
+# v3 endpoints. Everything except CREATE_VIDEO is free to call.
+EP_LOOKS = "/v3/avatars/looks"
+EP_AVATAR_GROUPS = "/v3/avatars"
+EP_VOICES = "/v3/voices"
+EP_ME = "/v3/users/me"
+EP_VIDEOS = "/v3/videos"
 
 CONFIRM_FLAG = "--i-understand-this-spends-credits"
 
-# Terminal states returned by video_status.get. HeyGen has used several
-# spellings over time, so compare case-insensitively.
-DONE_STATES = {"completed", "complete", "success"}
-FAIL_STATES = {"failed", "error"}
+DONE_STATES = {"completed"}
+FAIL_STATES = {"failed"}
+
+# Page size ceilings differ per endpoint (looks 50, voices 100).
+MAX_PAGE = {EP_LOOKS: 50, EP_VOICES: 100}
 
 
 class HeyGenError(Exception):
@@ -68,7 +73,9 @@ def request(method, path, params=None, body=None, timeout=60):
     """Make one JSON API call and return the decoded response."""
     url = BASE_URL + path
     if params:
-        url += "?" + urllib.parse.urlencode(params)
+        clean = {k: v for k, v in params.items() if v is not None}
+        if clean:
+            url += "?" + urllib.parse.urlencode(clean)
 
     headers = {"Accept": "application/json", **resolve_auth_header()}
     data = None
@@ -89,11 +96,52 @@ def request(method, path, params=None, body=None, timeout=60):
             "network egress policy. See the 'Network access' section of README.md."
         ) from exc
 
-    # HeyGen reports application-level problems in an `error` field even on 200.
+    # Surface a sunset notice if we ever hit a legacy path.
+    warning = payload.get("warning")
+    if isinstance(warning, dict) and warning.get("message"):
+        print(f"  [API warning] {warning['message']}", file=sys.stderr)
+
     err = payload.get("error")
     if err:
         raise HeyGenError(f"API returned an error for {path}: {json.dumps(err)}")
     return payload
+
+
+def paginate(path, params=None, max_items=0, enforce=None):
+    """Walk a v3 cursor-paginated collection and return the rows.
+
+    v3 list endpoints return {"data": [...], "has_more": bool, "next_token": str}
+    and take the previous `next_token` back as the `token` query parameter.
+
+    `enforce` maps response field -> expected value, and is re-checked on the
+    client. This is not belt-and-braces: as of 2026-08 the API applies query
+    filters to the first page only, and silently drops them once you follow a
+    `next_token`. Filtering `language=Hindi` without this returns 54 Hindi
+    voices followed by ~2000 unrelated ones. Verify before removing.
+    """
+    params = dict(params or {})
+    params.setdefault("limit", MAX_PAGE.get(path, 50))
+    enforce = {k: v for k, v in (enforce or {}).items() if v is not None}
+    collected = []
+
+    while True:
+        payload = request("GET", path, params=params)
+        rows = payload.get("data") or []
+        if not isinstance(rows, list):
+            raise HeyGenError(f"Unexpected response shape from {path}")
+
+        for row in rows:
+            if all(
+                str(row.get(field, "")).lower() == str(want).lower()
+                for field, want in enforce.items()
+            ):
+                collected.append(row)
+
+        if max_items and len(collected) >= max_items:
+            return collected[:max_items]
+        if not payload.get("has_more") or not payload.get("next_token"):
+            return collected
+        params["token"] = payload["next_token"]
 
 
 def _explain_http_error(exc, url):
@@ -108,9 +156,10 @@ def _explain_http_error(exc, url):
              "environment's API credential if you're relying on proxy injection.",
         403: "Authenticated but not permitted. This can also be the network egress "
              "proxy refusing the host -- see README.md.",
-        404: "Not found. For `status`, this usually means the video_id is unknown "
+        404: "Not found. For `status`, this usually means the video id is unknown "
              "or belongs to another account.",
-        424: "HeyGen rejected the parameters. Check avatar_id, voice_id and dimension.",
+        422: "HeyGen rejected the parameters. Check avatar_id (must be a LOOK id), "
+             "voice_id, resolution and aspect_ratio.",
         429: "Rate limited. Slow down and retry.",
     }
     hint = hints.get(exc.code, "")
@@ -122,33 +171,29 @@ def _explain_http_error(exc, url):
     return "\n".join(parts)
 
 
-def _rows(payload):
-    """Pull the list out of a v2 response, which nests it a couple of ways."""
-    data = payload.get("data")
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in ("avatars", "voices", "list", "data"):
-            if isinstance(data.get(key), list):
-                return data[key]
-    return []
-
-
-def print_table(rows, columns, limit=None):
+def print_table(rows, columns):
     """Render rows as a plain aligned table."""
     if not rows:
         print("(no results)")
         return
 
-    shown = rows[:limit] if limit else rows
     headers = [label for label, _ in columns]
-    table = [[str(row.get(field, "") or "") for _, field in columns] for row in shown]
+    table = []
+    for row in rows:
+        cells = []
+        for _, field in columns:
+            value = row.get(field, "")
+            if isinstance(value, list):
+                value = ",".join(str(v) for v in value)
+            # Some catalogue entries carry stray newlines/padding in `name`,
+            # which would otherwise break the column alignment.
+            cells.append(" ".join(str(value if value is not None else "").split()))
+        table.append(cells)
 
     widths = [len(h) for h in headers]
     for line in table:
         widths = [max(w, len(cell)) for w, cell in zip(widths, line)]
-    # Keep any single column from swamping the terminal.
-    widths = [min(w, 44) for w in widths]
+    widths = [min(w, 40) for w in widths]
 
     def fmt(cells):
         return "  ".join(c[:w].ljust(w) for c, w in zip(cells, widths))
@@ -158,48 +203,69 @@ def print_table(rows, columns, limit=None):
     for line in table:
         print(fmt(line))
 
-    if limit and len(rows) > limit:
-        print(f"\n... {len(rows) - limit} more (use --limit 0 to show all)")
-
 
 def cmd_avatars(args):
-    payload = request("GET", EP_AVATARS)
-    if args.json:
-        print(json.dumps(payload, indent=2))
-        return 0
+    """List avatar LOOKS -- the id here is what `generate --avatar-id` wants."""
+    params = {
+        "avatar_type": args.avatar_type,
+        "ownership": args.ownership,
+        "group_id": args.group_id,
+    }
+    rows = paginate(
+        EP_LOOKS,
+        params,
+        max_items=args.limit,
+        enforce={"avatar_type": args.avatar_type, "group_id": args.group_id},
+    )
 
-    rows = _rows(payload)
     if args.filter:
         needle = args.filter.lower()
         rows = [r for r in rows if needle in json.dumps(r).lower()]
 
-    print(f"Avatars: {len(rows)}\n")
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+
+    print(f"Avatar looks: {len(rows)}\n")
     print_table(
         rows,
         [
-            ("AVATAR_ID", "avatar_id"),
-            ("NAME", "avatar_name"),
+            ("AVATAR_ID (look id)", "id"),
+            ("NAME", "name"),
             ("GENDER", "gender"),
-            ("PREMIUM", "premium"),
+            ("TYPE", "avatar_type"),
+            ("DEFAULT_VOICE_ID", "default_voice_id"),
         ],
-        limit=args.limit or None,
     )
+    print("\nPass the AVATAR_ID column to `generate --avatar-id`.")
     return 0
 
 
 def cmd_voices(args):
-    payload = request("GET", EP_VOICES)
-    if args.json:
-        print(json.dumps(payload, indent=2))
-        return 0
+    params = {
+        "language": args.language,
+        "gender": args.gender,
+        "type": args.type,
+        "engine": args.engine,
+    }
+    rows = paginate(
+        EP_VOICES,
+        params,
+        max_items=args.limit,
+        enforce={
+            "language": args.language,
+            "gender": args.gender,
+            "type": args.type,
+        },
+    )
 
-    rows = _rows(payload)
-    if args.language:
-        needle = args.language.lower()
-        rows = [r for r in rows if needle in str(r.get("language", "")).lower()]
     if args.filter:
         needle = args.filter.lower()
         rows = [r for r in rows if needle in json.dumps(r).lower()]
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
 
     print(f"Voices: {len(rows)}\n")
     print_table(
@@ -209,75 +275,95 @@ def cmd_voices(args):
             ("NAME", "name"),
             ("LANGUAGE", "language"),
             ("GENDER", "gender"),
+            ("PAUSE", "support_pause"),
         ],
-        limit=args.limit or None,
     )
     return 0
 
 
-def cmd_quota(args):
-    payload = request("GET", EP_QUOTA)
+def cmd_credits(args):
+    payload = request("GET", EP_ME)
     if args.json:
         print(json.dumps(payload, indent=2))
         return 0
 
     data = payload.get("data") or {}
-    remaining = data.get("remaining_quota")
-    print(f"Remaining API quota: {remaining}")
-    details = data.get("details")
-    if isinstance(details, dict):
-        for key, value in details.items():
-            print(f"  {key}: {value}")
-    if isinstance(remaining, (int, float)) and remaining <= 0:
-        print("\nWARNING: balance is zero or negative -- generate calls will fail.")
-    print(
-        "\nNote: this is the API dashboard balance. HeyGen bills web-plan credits "
-        "from a separate pool."
-    )
+    wallet = data.get("wallet") or {}
+    balance = wallet.get("remaining_balance")
+    currency = str(wallet.get("currency", "")).upper()
+
+    print(f"Account:      {data.get('email', '(unknown)')}")
+    print(f"Billing type: {data.get('billing_type', '(unknown)')}")
+    print(f"Balance:      {balance} {currency}")
+
+    auto = wallet.get("auto_reload") or {}
+    print(f"Auto-reload:  {'on' if auto.get('enabled') else 'off'}")
+
+    if isinstance(balance, (int, float)) and balance <= 0:
+        print("\nWARNING: balance is empty -- generate calls will fail.")
     return 0
 
 
 def cmd_status(args):
-    payload = request("GET", EP_STATUS, params={"video_id": args.video_id})
+    payload = request("GET", f"{EP_VIDEOS}/{args.video_id}")
     if args.json:
         print(json.dumps(payload, indent=2))
         return 0
 
     data = payload.get("data") or {}
-    print(f"video_id: {args.video_id}")
+    print(f"video id: {args.video_id}")
     print(f"status:   {data.get('status')}")
-    for field in ("video_url", "thumbnail_url", "duration", "error"):
+    for field in ("video_url", "captioned_video_url", "subtitle_url",
+                  "thumbnail_url", "duration", "failure_message"):
         if data.get(field):
             print(f"{field}: {data[field]}")
     return 0
 
 
 def build_payload(args, script_text):
-    """Assemble the /v2/video/generate request body."""
-    character = {
+    """Assemble the POST /v3/videos request body."""
+    payload = {
         "type": "avatar",
         "avatar_id": args.avatar_id,
-        "avatar_style": args.avatar_style,
-    }
-    voice = {
-        "type": "text",
+        "script": script_text,
         "voice_id": args.voice_id,
-        "input_text": script_text,
-        "speed": args.speed,
-    }
-
-    scene = {"character": character, "voice": voice}
-    if args.background_color:
-        scene["background"] = {"type": "color", "value": args.background_color}
-
-    payload = {
-        "video_inputs": [scene],
-        "dimension": {"width": args.width, "height": args.height},
+        "resolution": args.resolution,
+        "aspect_ratio": args.aspect_ratio,
     }
     if args.title:
         payload["title"] = args.title
-    if args.callback_url:
-        payload["callback_id"] = args.callback_url
+    if args.engine:
+        payload["engine"] = {"type": args.engine}
+    if args.output_format != "mp4":
+        payload["output_format"] = args.output_format
+    if args.motion_prompt:
+        payload["motion_prompt"] = args.motion_prompt
+    if args.remove_background:
+        payload["remove_background"] = True
+    if args.background_color:
+        payload["background"] = {"type": "color", "value": args.background_color}
+
+    # voice_settings is only sent when something actually differs from default,
+    # since an empty object is rejected.
+    voice_settings = {}
+    if args.speed != 1.0:
+        voice_settings["speed"] = args.speed
+    if args.pitch:
+        voice_settings["pitch"] = args.pitch
+    if args.locale:
+        voice_settings["locale"] = args.locale
+    if voice_settings:
+        payload["voice_settings"] = voice_settings
+
+    # expressiveness is Avatar IV only; sending it with avatar_v is a hard error.
+    if args.expressiveness:
+        if args.engine == "avatar_v":
+            raise HeyGenError(
+                "--expressiveness is not supported by the avatar_v engine and will "
+                "fail validation. Drop it, or use --engine avatar_iv."
+            )
+        payload["expressiveness"] = args.expressiveness
+
     return payload
 
 
@@ -292,7 +378,7 @@ def read_script(args):
 
 
 def download(url, out_path, timeout=600):
-    """Stream the finished MP4 to disk without buffering it in memory."""
+    """Stream the finished video to disk without buffering it in memory."""
     directory = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(directory, exist_ok=True)
 
@@ -327,12 +413,12 @@ def download(url, out_path, timeout=600):
 
 
 def poll_until_done(video_id, interval, timeout):
-    """Poll video_status.get until the video is ready, or give up."""
+    """Poll GET /v3/videos/{id} until the video is ready, or give up."""
     deadline = time.time() + timeout
     last = None
 
     while time.time() < deadline:
-        data = request("GET", EP_STATUS, params={"video_id": video_id}).get("data") or {}
+        data = request("GET", f"{EP_VIDEOS}/{video_id}").get("data") or {}
         status = str(data.get("status", "")).lower()
 
         if status != last:
@@ -345,7 +431,9 @@ def poll_until_done(video_id, interval, timeout):
                 raise HeyGenError(f"Status is '{status}' but no video_url was returned.")
             return url
         if status in FAIL_STATES:
-            raise HeyGenError(f"Generation failed: {data.get('error') or data}")
+            raise HeyGenError(
+                f"Generation failed: {data.get('failure_message') or data}"
+            )
 
         time.sleep(interval)
 
@@ -361,18 +449,18 @@ def cmd_generate(args):
 
     if not args.confirm:
         print("DRY RUN -- nothing was sent, no credits spent.\n")
-        print(f"Would POST to {BASE_URL}{EP_GENERATE}:\n")
+        print(f"Would POST to {BASE_URL}{EP_VIDEOS}:\n")
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         print(f"\nTo actually submit this and spend credits, re-run with {CONFIRM_FLAG}")
         return 0
 
-    print(f"Submitting to {EP_GENERATE} (this spends credits)...")
-    data = request("POST", EP_GENERATE, body=payload).get("data") or {}
-    video_id = data.get("video_id")
+    print(f"Submitting to {EP_VIDEOS} (this spends credits)...")
+    data = request("POST", EP_VIDEOS, body=payload).get("data") or {}
+    video_id = data.get("video_id") or data.get("id")
     if not video_id:
-        raise HeyGenError(f"No video_id in response: {json.dumps(data)}")
+        raise HeyGenError(f"No video id in response: {json.dumps(data)}")
 
-    print(f"  video_id: {video_id}")
+    print(f"  video id: {video_id}")
     print(f"Polling every {args.poll_interval}s (timeout {args.timeout}s)...")
     video_url = poll_until_done(video_id, args.poll_interval, args.timeout)
 
@@ -385,70 +473,105 @@ def cmd_generate(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="heygen.py",
-        description="HeyGen API client. Only `generate` spends credits.",
+        description="HeyGen v3 API client. Only `generate` spends credits.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 examples:
-  python3 heygen.py quota
+  python3 heygen.py credits
   python3 heygen.py avatars --limit 20
-  python3 heygen.py voices --language hindi
+  python3 heygen.py voices --language Hindi
+  python3 heygen.py voices --language English --gender female
   python3 heygen.py status --video-id VIDEO_ID_PLACEHOLDER
 
   # dry run -- prints the payload, spends nothing:
   python3 heygen.py generate \\
       --script "PLACEHOLDER SCRIPT TEXT" \\
-      --avatar-id AVATAR_ID_PLACEHOLDER \\
+      --avatar-id AVATAR_LOOK_ID_PLACEHOLDER \\
       --voice-id VOICE_ID_PLACEHOLDER
 
   # for real, once you've picked ids:
   python3 heygen.py generate \\
       --script-file script.txt \\
-      --avatar-id AVATAR_ID_PLACEHOLDER \\
+      --avatar-id AVATAR_LOOK_ID_PLACEHOLDER \\
       --voice-id VOICE_ID_PLACEHOLDER \\
-      --width 1280 --height 720 \\
+      --resolution 1080p --aspect-ratio auto \\
       --out out/video.mp4 \\
       {CONFIRM_FLAG}
 """,
     )
-    parser.add_argument("--json", action="store_true", help="print the raw API response")
+    parser.add_argument("--json", action="store_true", help="print raw JSON")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    avatars = subparsers.add_parser("avatars", help="list available avatars (free)")
-    avatars.add_argument("--limit", type=int, default=40, help="rows to show; 0 for all")
+    # --json is accepted both before and after the subcommand; argparse keeps
+    # them as separate destinations, so the subcommand copy is merged in main().
+    def add_json(sub):
+        sub.add_argument(
+            "--json", action="store_true", dest="json_sub", help="print raw JSON"
+        )
+        return sub
+
+    avatars = add_json(subparsers.add_parser(
+        "avatars", help="list avatar looks; the id is what generate wants (free)"
+    ))
+    avatars.add_argument("--limit", type=int, default=40, help="0 for all")
+    avatars.add_argument(
+        "--avatar-type", choices=["studio_avatar", "digital_twin", "photo_avatar"]
+    )
+    avatars.add_argument("--ownership", choices=["public", "private"])
+    avatars.add_argument("--group-id", help="restrict to one character")
     avatars.add_argument("--filter", help="case-insensitive substring match")
     avatars.set_defaults(func=cmd_avatars)
 
-    voices = subparsers.add_parser("voices", help="list available voices (free)")
-    voices.add_argument("--limit", type=int, default=40, help="rows to show; 0 for all")
-    voices.add_argument("--language", help="filter by language, e.g. hindi, english")
+    voices = add_json(subparsers.add_parser("voices", help="browse voices (free)"))
+    voices.add_argument("--limit", type=int, default=40, help="0 for all")
+    voices.add_argument("--language", help='e.g. Hindi, English')
+    voices.add_argument("--gender", choices=["male", "female"])
+    voices.add_argument("--type", choices=["public", "private"])
+    voices.add_argument("--engine", help='e.g. starfish for TTS-compatible')
     voices.add_argument("--filter", help="case-insensitive substring match")
     voices.set_defaults(func=cmd_voices)
 
-    quota = subparsers.add_parser("quota", help="show remaining API credits (free)")
-    quota.set_defaults(func=cmd_quota)
+    credits = add_json(subparsers.add_parser("credits", help="show wallet balance (free)"))
+    credits.set_defaults(func=cmd_credits)
 
-    status = subparsers.add_parser("status", help="check one video's status (free)")
+    status = add_json(subparsers.add_parser("status", help="check one video's status (free)"))
     status.add_argument("--video-id", required=True)
     status.set_defaults(func=cmd_status)
 
     generate = subparsers.add_parser(
         "generate",
-        help="generate a video, poll, and download the MP4 (SPENDS CREDITS)",
+        help="generate a video, poll, and download it (SPENDS CREDITS)",
     )
     script_group = generate.add_mutually_exclusive_group(required=True)
     script_group.add_argument("--script", help="script text the avatar speaks")
     script_group.add_argument("--script-file", help="read the script from a UTF-8 file")
 
-    generate.add_argument("--avatar-id", required=True, help="from `heygen.py avatars`")
-    generate.add_argument("--voice-id", required=True, help="from `heygen.py voices`")
-    generate.add_argument("--width", type=int, default=1280)
-    generate.add_argument("--height", type=int, default=720)
-    generate.add_argument("--title", default=None, help="video title in HeyGen")
-    generate.add_argument("--avatar-style", default="normal")
-    generate.add_argument("--speed", type=float, default=1.0, help="voice speed, 0.5-1.5")
+    generate.add_argument("--avatar-id", required=True, help="a LOOK id from `avatars`")
+    generate.add_argument("--voice-id", required=True, help="from `voices`")
+    generate.add_argument(
+        "--resolution", default="1080p", choices=["720p", "1080p", "4k"]
+    )
+    generate.add_argument(
+        "--aspect-ratio", default="auto",
+        choices=["auto", "16:9", "9:16", "4:5", "5:4", "1:1"],
+    )
+    generate.add_argument("--title", default=None, help="display name in HeyGen")
+    generate.add_argument(
+        "--engine", default=None, choices=["avatar_iii", "avatar_iv", "avatar_v"],
+        help="omit for the Avatar IV default; check the look's supported engines",
+    )
+    generate.add_argument("--speed", type=float, default=1.0, help="0.5-1.5")
+    generate.add_argument("--pitch", type=int, default=None, help="-50 to +50")
+    generate.add_argument("--locale", default=None, help="e.g. en-US, hi-IN")
+    generate.add_argument("--motion-prompt", default=None, help="body/hand motion")
+    generate.add_argument(
+        "--expressiveness", choices=["low", "medium", "high"],
+        help="Avatar IV only; invalid with --engine avatar_v",
+    )
     generate.add_argument("--background-color", default=None, help='hex, e.g. "#ffffff"')
-    generate.add_argument("--callback-url", default=None)
-    generate.add_argument("--out", default="out/video.mp4", help="where to save the MP4")
+    generate.add_argument("--remove-background", action="store_true")
+    generate.add_argument("--output-format", default="mp4", choices=["mp4", "webm"])
+    generate.add_argument("--out", default="out/video.mp4", help="where to save it")
     generate.add_argument("--poll-interval", type=int, default=10)
     generate.add_argument("--timeout", type=int, default=1800)
     generate.add_argument(
@@ -464,6 +587,7 @@ examples:
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    args.json = args.json or getattr(args, "json_sub", False)
     try:
         return args.func(args)
     except HeyGenError as exc:
