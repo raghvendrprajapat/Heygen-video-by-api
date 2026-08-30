@@ -1,0 +1,71 @@
+Create a 60-second vertical UGC-style product demo for ConvertScreen, a tool
+that turns raw app screenshots into conversion-focused App Store and Google
+Play screenshot sets.
+
+This must read as a developer sharing a fix for a problem they hit — NOT as a
+sponsored ad. No brand intro, no logo card, no "sponsored by", no discount code,
+no "link in bio", no subscribe ask. The presenter is a peer, not a spokesperson.
+Never say the words "sponsored", "partner", or "ad".
+
+STYLE
+Single presenter, mid-twenties to mid-thirties, plain dark solid top, neutral
+dark background, soft key light. Handheld-at-arm's-length framing, filmed like
+a selfie video, NOT a studio set. Rigid upright posture, no swaying, no hair or
+face touching. Direct eye contact with the lens throughout.
+
+Energy arc: hard and clinical on the hook, calm and instructional through the
+steps, firm on the close. Machine-gun pacing, zero filler words, hard cut at
+the end with no smile and no fade.
+
+DELIVERY DIRECTION
+- Hook: zero blinking, intense direct stare, staccato pace. Sharp downward
+  right-hand chop on "screenshots".
+- "THREE seconds" and "TEN store sizes": eyebrows raise on the number, heavy
+  vocal stress.
+- Steps one/two/three: slow the pace down, count them on fingers.
+- "Pretty wins compliments. Structure wins installs.": precision pinch gesture,
+  falling pitch.
+- Close: lean slightly toward the lens, furrowed brows, stern. Hard cut.
+
+SCREEN RECORDING
+The attached video is the real product. Cut to it as B-roll under the step
+section and the payoff — never behind the hook or the final line, which stay on
+the presenter's face. Match the cuts to the narration:
+- "Drop in your raw app screens" -> the upload and project-create screens.
+- "writes the headlines and reorders your screens" -> the AI assistant panel
+  generating copy, and the slides labelled Hook / Feature / Proof / CTA.
+- "Export one ZIP. Every store size" -> the publishing-target dialog and the
+  final review grid showing 20 exported images across four device sizes.
+Zoom in on the screen recording so UI text is legible on a phone. Do not show
+any error banners or toast messages that appear in the recording.
+
+CAPTIONS
+Burn in captions, bottom-centre, bold sans-serif, high contrast, a few words at
+a time. Emphasise the numbers.
+
+Follow the script below exactly, scene by scene. Do not add lines, do not
+rewrite lines, and do not append a call to action.
+
+SCRIPT
+
+Your app isn't losing installs because of the app. It's the screenshots.
+
+Most developers upload raw simulator screens. Nobody taps those.
+
+A visitor judges your listing in THREE seconds.
+
+The old fix? A designer. A week of waiting. A few hundred dollars. Then you redo all of it for TEN store sizes.
+
+Here is how it works.
+
+Step one. Drop in your raw app screens. Nothing to install.
+
+Step two. The AI writes the headlines and reorders your screens into an actual conversion story. Hook. Feature. Proof. Close. Every slide gets a job.
+
+Step three. Export one ZIP. Every store size, named and ready to upload.
+
+And here is the part most people don't realize. Most screenshot tools stop at pretty. Pretty wins compliments. Structure wins installs.
+
+Your screenshots are not decoration. They are your conversion rate.
+
+So here is the real takeaway. Before you ship another feature, go look at your store listing. Fix that first.

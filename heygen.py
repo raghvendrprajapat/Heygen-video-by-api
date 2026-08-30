@@ -28,6 +28,12 @@ EP_AVATAR_GROUPS = "/v3/avatars"
 EP_VOICES = "/v3/voices"
 EP_ME = "/v3/users/me"
 EP_VIDEOS = "/v3/videos"
+EP_ASSETS = "/v3/assets"
+EP_AGENTS = "/v3/video-agents"
+
+# POST /v3/assets is capped at 32 MB; larger files need the presigned direct
+# upload flow, which this client does not implement.
+ASSET_MAX_BYTES = 32 * 1024 * 1024
 
 CONFIRM_FLAG = "--i-understand-this-spends-credits"
 
@@ -320,6 +326,182 @@ def cmd_status(args):
     return 0
 
 
+MIME_BY_EXT = {
+    ".mp4": "video/mp4", ".webm": "video/webm", ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".mp3": "audio/mpeg",
+    ".wav": "audio/wav", ".pdf": "application/pdf", ".srt": "application/x-subrip",
+}
+
+
+def upload_asset(path):
+    """POST /v3/assets as multipart/form-data and return the asset_id.
+
+    Hand-rolled because the stdlib has no multipart encoder.
+    """
+    size = os.path.getsize(path)
+    if size > ASSET_MAX_BYTES:
+        raise HeyGenError(
+            f"{path} is {size / 1e6:.1f} MB; POST {EP_ASSETS} accepts at most 32 MB. "
+            "Trim the file, or implement the presigned direct-upload flow."
+        )
+
+    name = os.path.basename(path)
+    ext = os.path.splitext(name)[1].lower()
+    mime = MIME_BY_EXT.get(ext, "application/octet-stream")
+
+    boundary = "----heygenpy" + os.urandom(12).hex()
+    with open(path, "rb") as handle:
+        payload = handle.read()
+
+    body = b"".join([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode(),
+        f"Content-Type: {mime}\r\n\r\n".encode(),
+        payload,
+        f"\r\n--{boundary}--\r\n".encode(),
+    ])
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        **resolve_auth_header(),
+    }
+    req = urllib.request.Request(
+        BASE_URL + EP_ASSETS, data=body, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300, context=_ssl_context()) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise HeyGenError(_explain_http_error(exc, BASE_URL + EP_ASSETS)) from exc
+
+    asset = data.get("data") or data
+    asset_id = asset.get("asset_id")
+    if not asset_id:
+        raise HeyGenError(f"No asset_id in upload response: {json.dumps(data)}")
+    return asset_id
+
+
+def cmd_upload(args):
+    asset_id = upload_asset(args.file)
+    print(f"asset_id: {asset_id}")
+    return 0
+
+
+def cmd_video_agent(args):
+    """Drive POST /v3/video-agents: prompt in, finished video out."""
+    prompt = args.prompt
+    if args.prompt_file:
+        with open(args.prompt_file, "r", encoding="utf-8") as handle:
+            prompt = handle.read().strip()
+    if not prompt:
+        raise HeyGenError("Prompt is empty.")
+
+    files = [{"type": "asset_id", "asset_id": a} for a in (args.asset_id or [])]
+    files += [{"type": "url", "url": u} for u in (args.file_url or [])]
+
+    payload = {"prompt": prompt, "mode": args.mode}
+    if args.orientation:
+        payload["orientation"] = args.orientation
+    if args.avatar_id:
+        payload["avatar_id"] = args.avatar_id
+    if args.voice_id:
+        payload["voice_id"] = args.voice_id
+    if args.style_id:
+        payload["style_id"] = args.style_id
+
+    # Local files are uploaded only once we are actually going to submit, so a
+    # dry run stays free of side effects.
+    pending_uploads = list(args.upload or [])
+
+    if not args.confirm:
+        preview = dict(payload)
+        preview["files"] = files + [
+            {"type": "asset_id", "asset_id": f"<upload of {p}>"} for p in pending_uploads
+        ]
+        print("DRY RUN -- nothing was sent, no credits spent.\n")
+        print(f"Would POST to {BASE_URL}{EP_AGENTS}:\n")
+        print(json.dumps(preview, indent=2, ensure_ascii=False))
+        print(f"\nTo actually submit this and spend credits, re-run with {CONFIRM_FLAG}")
+        return 0
+
+    for path in pending_uploads:
+        print(f"Uploading {path} ...")
+        files.append({"type": "asset_id", "asset_id": upload_asset(path)})
+
+    if files:
+        payload["files"] = files
+
+    print(f"Submitting to {EP_AGENTS} (this spends credits)...")
+    data = request("POST", EP_AGENTS, body=payload, timeout=180).get("data") or {}
+    session_id = data.get("session_id")
+    if not session_id:
+        raise HeyGenError(f"No session_id in response: {json.dumps(data)}")
+    print(f"  session_id: {session_id}")
+    print(f"  watch live: https://app.heygen.com/video-agent/{session_id}")
+
+    if args.mode == "chat":
+        print(
+            "\nChat mode: the agent pauses at a storyboard checkpoint.\n"
+            f"Review with:  python3 heygen.py agent-status --session-id {session_id}\n"
+            "Approve by sending a follow-up message to the session."
+        )
+        return 0
+
+    video_id = poll_session_for_video(session_id, args.poll_interval, args.timeout)
+    print(f"  video id: {video_id}")
+    video_url = poll_until_done(video_id, args.poll_interval, args.timeout)
+
+    print(f"Ready. Downloading to {args.out}")
+    size = download(video_url, args.out)
+    print(f"\nSaved {args.out} ({size // 1024} KiB)")
+    return 0
+
+
+def poll_session_for_video(session_id, interval, timeout):
+    """Wait for the agent session to assign a video_id."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        data = request("GET", f"{EP_AGENTS}/{session_id}").get("data") or {}
+        status = str(data.get("status", "")).lower()
+        if status != last:
+            print(f"  session: {status or '(unknown)'}")
+            last = status
+
+        video_id = data.get("video_id")
+        if video_id:
+            return video_id
+        if status in ("failed", "error"):
+            raise HeyGenError(f"Agent session failed: {data.get('failure_message') or data}")
+        if status == "reviewing":
+            raise HeyGenError(
+                "Session is waiting at a storyboard checkpoint. It was created in "
+                "chat mode; approve it before the video will render."
+            )
+        time.sleep(interval)
+
+    raise HeyGenError(f"Timed out after {timeout}s waiting for a video_id on {session_id}.")
+
+
+def cmd_agent_status(args):
+    payload = request("GET", f"{EP_AGENTS}/{args.session_id}")
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    data = payload.get("data") or {}
+    print(f"session:  {args.session_id}")
+    print(f"status:   {data.get('status')}")
+    for field in ("title", "video_id", "failure_message"):
+        if data.get(field):
+            print(f"{field}: {data[field]}")
+    for message in (data.get("messages") or [])[-4:]:
+        role = message.get("role", "?")
+        content = " ".join(str(message.get("content", "")).split())[:400]
+        print(f"  [{role}] {content}")
+    return 0
+
+
 def build_payload(args, script_text):
     """Assemble the POST /v3/videos request body."""
     payload = {
@@ -537,6 +719,52 @@ examples:
     status = add_json(subparsers.add_parser("status", help="check one video's status (free)"))
     status.add_argument("--video-id", required=True)
     status.set_defaults(func=cmd_status)
+
+    upload = add_json(subparsers.add_parser(
+        "upload", help="upload a local file and print its asset_id (free)"
+    ))
+    upload.add_argument("--file", required=True, help="mp4/webm/png/jpg/mp3/wav/pdf")
+    upload.set_defaults(func=cmd_upload)
+
+    agent_status = add_json(subparsers.add_parser(
+        "agent-status", help="inspect a Video Agent session (free)"
+    ))
+    agent_status.add_argument("--session-id", required=True)
+    agent_status.set_defaults(func=cmd_agent_status)
+
+    agent = add_json(subparsers.add_parser(
+        "video-agent",
+        help="prompt-to-video via the Video Agent (SPENDS CREDITS)",
+    ))
+    agent_prompt = agent.add_mutually_exclusive_group(required=True)
+    agent_prompt.add_argument("--prompt", help="the brief, 1-10000 chars")
+    agent_prompt.add_argument("--prompt-file", help="read the brief from a file")
+    agent.add_argument(
+        "--upload", action="append", metavar="PATH",
+        help="local file to attach; uploaded only on a confirmed run. Repeatable.",
+    )
+    agent.add_argument(
+        "--asset-id", action="append", help="attach an already-uploaded asset. Repeatable."
+    )
+    agent.add_argument(
+        "--file-url", action="append", help="attach a file by public URL. Repeatable."
+    )
+    agent.add_argument("--orientation", choices=["landscape", "portrait"])
+    agent.add_argument("--avatar-id", help="omit to let the agent choose")
+    agent.add_argument("--voice-id", help="omit to let the agent choose")
+    agent.add_argument("--style-id", help="from GET /v3/video-agents/styles")
+    agent.add_argument(
+        "--mode", default="generate", choices=["generate", "chat"],
+        help="chat pauses at a storyboard checkpoint for review",
+    )
+    agent.add_argument("--out", default="out/agent-video.mp4")
+    agent.add_argument("--poll-interval", type=int, default=15)
+    agent.add_argument("--timeout", type=int, default=2400)
+    agent.add_argument(
+        CONFIRM_FLAG, dest="confirm", action="store_true",
+        help="required to actually submit; without it this is a dry run",
+    )
+    agent.set_defaults(func=cmd_video_agent)
 
     generate = subparsers.add_parser(
         "generate",

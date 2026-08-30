@@ -1,0 +1,21 @@
+Your app isn't losing installs because of the app. It's the screenshots.
+
+Most developers upload raw simulator screens. Nobody taps those.
+
+A visitor judges your listing in THREE seconds.
+
+The old fix? A designer. A week of waiting. A few hundred dollars. Then you redo all of it for TEN store sizes.
+
+Here is how it works.
+
+Step one. Drop in your raw app screens. Nothing to install.
+
+Step two. The AI writes the headlines and reorders your screens into an actual conversion story. Hook. Feature. Proof. Close. Every slide gets a job.
+
+Step three. Export one ZIP. Every store size, named and ready to upload.
+
+And here is the part most people don't realize. Most screenshot tools stop at pretty. Pretty wins compliments. Structure wins installs.
+
+Your screenshots are not decoration. They are your conversion rate.
+
+So here is the real takeaway. Before you ship another feature, go look at your store listing. Fix that first.
