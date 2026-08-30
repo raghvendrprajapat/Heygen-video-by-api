@@ -1,0 +1,23 @@
+If you have ever shipped an app, you know this feeling.
+
+The code is done. The build is signed. And then you hit the store listing. Screenshots.
+
+And suddenly you are not a developer any more. You are a graphic designer.
+
+You open Figma. You hunt for a device frame. You write a headline, hate it, and write it again.
+
+You try to line up five slides so they tell some kind of story.
+
+Then you find out the App Store wants one set of sizes and Google Play wants another. iPhone. iPad. Android phone. Seven inch tablet. Ten inch tablet. Chromebook.
+
+So you export the whole thing again. And again.
+
+A full day gone. Sometimes two. And the screenshots still look like screenshots.
+
+Here is why that costs more than most developers think.
+
+Your screenshots are the last thing a visitor sees before they decide.
+
+They judge your listing in about three seconds. They do not read your description. They swipe the images.
+
+Raw simulator screens lose that tap. A designed set earns it.

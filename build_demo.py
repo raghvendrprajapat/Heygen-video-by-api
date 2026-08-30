@@ -37,18 +37,30 @@ GROUND = "0x0d0d14"
 DEMO_STARTS_AT = "let me show you what i have been using instead"
 CLOSE_STARTS_AT = "here is what i would actually take away"
 
+# From this point on, the recording carries a red "AI placement failed" error
+# banner in the toolbar. Spans starting at or after this have that strip cut
+# out; earlier spans keep it, because the same strip carries the genuine
+# "Reordered screenshots ..." status message we do want on screen.
+BANNER_FROM = 185.0
+BANNER_TOP, BANNER_BOTTOM = 94, 130  # source y range of the strip
+
 # phrase in the avatar narration -> timestamp in the screen recording
 WALKTHROUGH_BEATS = [
     ("this is convertscreen", 18),
     ("drop in your raw app screens", 47),
     ("pick a style and a device frame", 66),
     ("reads your screens and writes the headlines", 95),
-    ("reorders your screenshots into a conversion story", 192),
-    ("every slide gets a job", 110),
-    ("from here you can adjust anything", 210),
-    ("need another language", 150),
-    ("then you export", 326),
-    ("five slides", 348),
+    # 110s is where the app actually prints the reorder message: "Reordered
+    # screenshots to follow a standard conversion story: Home (Hook) -> Shorts
+    # (Engagement) -> Subscriptions (Social) -> Library (Utility) -> CTA."
+    ("reorders your screenshots into a conversion story", 110),
+    ("every slide gets a job", 120),
+    ("from here you can adjust anything", 160),
+    ("need another language", 175),
+    ("then you export", 330),
+    # "five slides" also occurs in the intro, so anchor on a phrase that only
+    # appears at the export beat.
+    ("four device sizes", 352),
 ]
 
 # phrase in the deep-dive voiceover -> timestamp in the screen recording
@@ -147,13 +159,29 @@ def locate_in_text(text, phrase, total_seconds):
     return idx / max(1, len(squash(text))) * total_seconds
 
 
-def recording_span(recording, start, length, out, zoom=1.06):
-    """One chunk of the screen recording, fitted to the output frame."""
+def recording_span(recording, start, length, out, zoom=1.06, hide_banner=False):
+    """One chunk of the screen recording, fitted to the output frame.
+
+    When hide_banner is set, the toolbar strip carrying the error message is
+    removed by stacking the rows above it onto the rows below it, so the banner
+    never reaches the cut.
+    """
+    if hide_banner:
+        pre = (
+            f"[0:v]crop=iw:{BANNER_TOP}:0:0[top];"
+            f"[0:v]crop=iw:ih-{BANNER_BOTTOM}:0:{BANNER_BOTTOM}[bot];"
+            f"[top][bot]vstack=inputs=2,"
+        )
+    else:
+        pre = "[0:v]"
+
     run([
         "-ss", f"{start:.2f}", "-t", f"{length:.2f}", "-i", recording, "-an",
-        "-vf",
-        f"scale={int(W*zoom)}:-2:flags=lanczos,crop='min(iw,{W})':'min(ih,{H})',"
-        f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={GROUND},setsar=1,fps={FPS}",
+        "-filter_complex",
+        pre
+        + f"scale={int(W*zoom)}:-2:flags=lanczos,crop='min(iw,{W})':'min(ih,{H})',"
+        f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={GROUND},setsar=1,fps={FPS}[v]",
+        "-map", "[v]",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", out,
     ])
 
@@ -178,9 +206,10 @@ def build_bed(recording, beats, section_start, section_end, work, tag, rec_len):
         if length <= 0.08:
             continue
         start = max(0.0, min(at, rec_len - length - 0.1))
-        print(f"    {length:6.1f}s  from {start:6.1f}s  <- {phrase}")
+        hide = start >= BANNER_FROM
+        print(f"    {length:6.1f}s  from {start:6.1f}s{'  [banner cut]' if hide else '':14} <- {phrase}")
         out = os.path.join(work, f"{tag}{i:02d}.mp4")
-        recording_span(recording, start, length, out)
+        recording_span(recording, start, length, out, hide_banner=hide)
         parts.append(out)
 
     listing = os.path.join(work, f"{tag}.txt")
@@ -193,13 +222,18 @@ def build_bed(recording, beats, section_start, section_end, work, tag, rec_len):
 
 
 def full_frame(src, start, end, out):
-    """A slice of the avatar video, filling the frame, audio intact."""
+    """A slice of the avatar video, fitted to the frame, audio intact.
+
+    Fitted, never cropped. HeyGen renders these avatars near-square (1088x1080),
+    so cropping to 16:9 slices the top of the head off. Pad instead and let the
+    portrait sit centred on the ground colour.
+    """
     args = ["-i", src, "-ss", f"{start:.2f}"]
     if end is not None:
         args += ["-to", f"{end:.2f}"]
     run(args + [
-        "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-               f"crop={W}:{H},setsar=1,fps={FPS}",
+        "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+               f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={GROUND},setsar=1,fps={FPS}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", out,
     ])
@@ -209,8 +243,10 @@ def main():
     global FFMPEG
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--narration", required=True, help="avatar video with audio")
-    parser.add_argument("--srt", required=True, help="avatar narration SRT sidecar")
+    parser.add_argument("--intro-video", required=True, help="avatar clip: problem intro")
+    parser.add_argument("--walk-video", required=True, help="avatar clip: guided walkthrough")
+    parser.add_argument("--walk-srt", required=True, help="SRT for the walkthrough clip")
+    parser.add_argument("--close-video", required=True, help="avatar clip: takeaway")
     parser.add_argument("--recording", required=True, help="product screen recording")
     parser.add_argument("--deepdive-audio", action="append", default=[],
                         help="TTS mp3 for the screen-only section. Repeatable, in order.")
@@ -226,27 +262,25 @@ def main():
     work = tempfile.mkdtemp(prefix="demo-")
     sections = []
 
-    avatar_len = duration_of(args.narration)
     rec_len = duration_of(args.recording)
-    cues = parse_srt(args.srt)
+    intro_len = duration_of(args.intro_video)
+    walk_len = duration_of(args.walk_video)
+    close_len = duration_of(args.close_video)
+    cues = parse_srt(args.walk_srt)
 
-    demo_start = locate_in_srt(cues, DEMO_STARTS_AT)
-    close_start = locate_in_srt(cues, CLOSE_STARTS_AT)
-    if demo_start is None or close_start is None:
-        sys.exit("Section markers not found in the SRT; script and markers have drifted.")
-
-    print(f"avatar narration : {avatar_len:.1f}s")
     print(f"screen recording : {rec_len:.1f}s")
-    print(f"  intro       0.0 -> {demo_start:.1f}s")
-    print(f"  walkthrough {demo_start:.1f} -> {close_start:.1f}s")
-    print(f"  close       {close_start:.1f} -> {avatar_len:.1f}s")
+    print(f"  intro       {intro_len:.1f}s")
+    print(f"  walkthrough {walk_len:.1f}s")
+    print(f"  close       {close_len:.1f}s")
 
     # 1. intro, avatar full frame
     intro = os.path.join(work, "s1.mp4")
-    full_frame(args.narration, 0, demo_start, intro)
+    full_frame(args.intro_video, 0, None, intro)
     sections.append(intro)
 
-    # 2. walkthrough, recording with the avatar inset
+    # 2. walkthrough, recording with the avatar inset. The walkthrough clip
+    # starts at zero, so beats resolve against its own SRT directly.
+    demo_start, close_start = 0.0, walk_len
     beats = [(locate_in_srt(cues, p), at, p) for p, at in WALKTHROUGH_BEATS]
     beats = [b for b in beats if b[0] is not None]
     bed = build_bed(args.recording, beats, demo_start, close_start, work, "walk", rec_len)
@@ -254,13 +288,13 @@ def main():
     inset_w = int(W * args.inset_scale)
     walk = os.path.join(work, "s2.mp4")
     run([
-        "-i", args.narration, "-i", bed,
+        "-i", args.walk_video, "-i", bed,
         "-filter_complex",
-        f"[0:v]trim={demo_start}:{close_start},setpts=PTS-STARTPTS,"
-        f"scale={inset_w}:-2,setsar=1[pip];"
+        # Square avatar -> a rounded-feeling portrait card in the corner.
+        f"[0:v]scale={inset_w}:-2,setsar=1[pip];"
         f"[1:v]setsar=1,fps={FPS}[bg];"
         f"[bg][pip]overlay=W-w-{args.margin}:H-h-{args.margin}:shortest=1[v];"
-        f"[0:a]atrim={demo_start}:{close_start},asetpts=PTS-STARTPTS[a]",
+        f"[0:a]anull[a]",
         "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", walk,
@@ -310,7 +344,7 @@ def main():
 
     # 4. close, avatar full frame
     close = os.path.join(work, "s4.mp4")
-    full_frame(args.narration, close_start, None, close)
+    full_frame(args.close_video, 0, None, close)
     sections.append(close)
 
     listing = os.path.join(work, "final.txt")
